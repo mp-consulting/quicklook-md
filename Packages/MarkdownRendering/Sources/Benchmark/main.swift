@@ -55,6 +55,12 @@ func measure(_ label: String, iterations: Int, _ body: () -> Void) {
     print("\(label.padding(toLength: 28, withPad: " ", startingAt: 0)) median \(String(format: "%8.2f", samples[samples.count / 2])) ms   min \(String(format: "%8.2f", samples[0])) ms")
 }
 
+// Write the inputs out so other renderers can be benchmarked on identical documents.
+if let directory = ProcessInfo.processInfo.environment["BENCH_DUMP"] {
+    try! small.write(toFile: "\(directory)/small.md", atomically: true, encoding: .utf8)
+    try! large.write(toFile: "\(directory)/large.md", atomically: true, encoding: .utf8)
+}
+
 if ProcessInfo.processInfo.environment["BENCH_PROFILE"] != nil {
     for _ in 0..<60 { _ = MarkdownRendering.htmlDocument(from: large, title: "p", imageSource: { "cid:\($0)" }) }
     exit(0)
