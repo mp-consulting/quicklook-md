@@ -61,7 +61,7 @@ xcodebuild \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     MARKETING_VERSION="$VERSION" \
     CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-    "${sign_flags[@]}" \
+    ${sign_flags[@]+"${sign_flags[@]}"} \
     build
 
 echo "==> Verifying signature"
