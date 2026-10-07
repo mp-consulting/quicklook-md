@@ -55,7 +55,7 @@ If previews still show plain text, open the app and click **Open Extension Setti
 
 ## Releasing
 
-Publishing a GitHub Release with a `vX.Y.Z` tag runs [release.yml](.github/workflows/release.yml). It builds the app, signs it with Developer ID, notarizes and staples it, then attaches the `.dmg`, `.zip` and `SHA256SUMS.txt` to the release. It needs these repository secrets:
+Publishing a GitHub Release with a `vX.Y.Z` tag runs [release.yml](.github/workflows/release.yml). It builds the app, signs it with Developer ID, notarizes and staples it, then attaches the `.dmg`, `.zip` and `SHA256SUMS.txt` to the release. It needs these repository secrets (see [docs/NOTARIZATION.md](docs/NOTARIZATION.md) for how to create and renew them):
 
 | Secret | Content |
 |--------|---------|
