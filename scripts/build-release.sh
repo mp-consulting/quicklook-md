@@ -98,10 +98,13 @@ fi
 
 (cd "$OUT_DIR" && shasum -a 256 "$ARTIFACT.zip" "$ARTIFACT.dmg" > SHA256SUMS.txt)
 
-# Xcode registers every built app with Launch Services; drop this copy so it doesn't show up
-# as a duplicate Quick Look extension next to the installed one.
-pluginkit -r "$APP/Contents/PlugIns/QuickLookMDPreview.appex" 2>/dev/null || true
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" || true
+# Launch Services registers any app it finds on disk, so a leftover build shows up as a duplicate
+# Quick Look extension next to the installed one. Remove it locally; CI still needs it for checks.
+if [[ -z "${CI:-}" ]]; then
+    pluginkit -r "$APP/Contents/PlugIns/QuickLookMDPreview.appex" 2>/dev/null || true
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" || true
+    rm -rf "$APP"
+fi
 
 echo "==> Done"
 ls -lh "$OUT_DIR"

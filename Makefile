@@ -21,9 +21,11 @@ install: build
 	ditto "$(BUILT_APP)" "$(INSTALL_TO)"
 	open -g "$(INSTALL_TO)" && sleep 1 && osascript -e 'quit app "$(APP_NAME)"' || true
 	pluginkit -a "$(INSTALL_TO)/Contents/PlugIns/QuickLookMDPreview.appex"
-	# Unregister the build copy so only the installed app shows up in Login Items & Extensions.
+	# Remove the build copy: Launch Services re-registers any app it finds on disk, which shows up
+	# as a duplicate in Login Items & Extensions.
 	pluginkit -r "$(BUILT_APP)/Contents/PlugIns/QuickLookMDPreview.appex" 2>/dev/null || true
 	$(LSREGISTER) -u "$(BUILT_APP)"
+	rm -rf "$(BUILT_APP)"
 	$(MAKE) reload
 
 uninstall:
