@@ -4,7 +4,7 @@ BUILT_APP  := $(DERIVED)/Build/Products/Release/$(APP_NAME).app
 INSTALL_TO := /Applications/$(APP_NAME).app
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
-.PHONY: project build test install uninstall reload release clean
+.PHONY: project build test bench install uninstall reload release clean
 
 project:
 	xcodegen generate
@@ -15,6 +15,9 @@ build: project
 
 test:
 	cd Packages/MarkdownRendering && swift test --scratch-path "$(DERIVED)/spm"
+
+bench:
+	cd Packages/MarkdownRendering && swift run -c release --scratch-path "$(DERIVED)/spm" Benchmark
 
 install: build
 	rm -rf "$(INSTALL_TO)"

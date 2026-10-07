@@ -182,3 +182,14 @@ details summary { cursor: pointer; }
 .alert-important { --alert-color: var(--important); }
 .alert-warning { --alert-color: var(--warning); }
 .alert-caution { --alert-color: var(--caution); }
+
+.footnote-ref a { font-size: .75em; }
+.footnotes {
+  margin-top: 32px;
+  padding-top: 8px;
+  font-size: .85em;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+.footnotes ol { padding-left: 1.5em; }
+.footnote-backref { font-family: ui-monospace, monospace; }

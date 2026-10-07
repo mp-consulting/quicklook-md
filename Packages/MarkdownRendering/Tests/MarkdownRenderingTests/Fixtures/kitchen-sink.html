@@ -1,0 +1,107 @@
+<h1 id="kitchen-sink"><a class="anchor" href="#kitchen-sink"></a>Kitchen sink</h1>
+<p>Intro with <strong>bold</strong>, <em>italic</em>, <em><strong>both</strong></em>, <del>strike</del>, <code>code</code>, a <a href="https://example.com" title="Example">link</a>, an autolink <a href="https://example.com/path?a=1&amp;b=2">https://example.com/path?a=1&amp;b=2</a>, and an escaped *star*.
+Hard break follows<br>
+next line. Entities: © &amp; 😀.</p>
+<h2 id="headings-with-formatting--punctuation"><a class="anchor" href="#headings-with-formatting--punctuation"></a>Headings with <em>formatting</em> &amp; &quot;punctuation&quot;</h2>
+<h3 id="duplicate"><a class="anchor" href="#duplicate"></a>Duplicate</h3>
+<h3 id="duplicate-1"><a class="anchor" href="#duplicate-1"></a>Duplicate</h3>
+<h2 id="lists"><a class="anchor" href="#lists"></a>Lists</h2>
+<ul>
+<li>tight</li>
+<li>list
+<ol>
+<li>nested ordered</li>
+<li>second</li>
+</ol>
+</li>
+</ul>
+<ol start="5">
+<li>starts at five</li>
+<li>six</li>
+</ol>
+<ul>
+<li><p>loose</p>
+</li>
+<li><p>list</p>
+</li>
+</ul>
+<p>Tasks, tight and loose:</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled checked> done</li>
+<li class="task-list-item"><input type="checkbox" disabled> todo</li>
+</ul>
+<ul class="contains-task-list">
+<li class="task-list-item"><p><input type="checkbox" disabled checked> loose done</p>
+</li>
+<li class="task-list-item"><p><input type="checkbox" disabled> loose todo</p>
+</li>
+</ul>
+<h2 id="code"><a class="anchor" href="#code"></a>Code</h2>
+<pre data-lang="python"><code class="language-python">def f(x):
+    return x &lt; 1 and &quot;&lt;tag&gt;&quot;
+</code></pre>
+<pre><code>indented code
+</code></pre>
+<h2 id="quotes-and-alerts"><a class="anchor" href="#quotes-and-alerts"></a>Quotes and alerts</h2>
+<blockquote>
+<p>A plain quote</p>
+<blockquote>
+<p>nested</p>
+</blockquote>
+</blockquote>
+<div class="alert alert-important"><p class="alert-title">Important</p>
+<p>Read this.</p>
+<p>Twice.</p>
+</div>
+<div class="alert alert-caution"><p class="alert-title">Caution</p>
+<p>Careful.</p>
+</div>
+<h2 id="table"><a class="anchor" href="#table"></a>Table</h2>
+<table>
+<thead>
+<tr>
+<th align="left">Left</th>
+<th align="center">Center</th>
+<th align="right">Right</th>
+<th>None</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left"><code>a</code></td>
+<td align="center"><strong>b</strong></td>
+<td align="right"><a href="#c">c</a></td>
+<td>d | e</td>
+</tr>
+<tr>
+<td align="left">1</td>
+<td align="center">2</td>
+<td align="right"></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="media-and-html"><a class="anchor" href="#media-and-html"></a>Media and HTML</h2>
+<p><img src="images/logo.png" alt="Logo alt" title="The logo"></p>
+<p align="center">
+  <img src="images/banner.png" width="200" alt="Banner">
+</p>
+<p>Inline <kbd>Cmd</kbd> + <kbd>Space</kbd>.</p>
+<details>
+<summary>More</summary>
+<p>Hidden <strong>content</strong>.</p>
+</details>
+<h2 id="footnotes"><a class="anchor" href="#footnotes"></a>Footnotes</h2>
+<p>Claim<sup class="footnote-ref"><a href="#fn-1" id="fnref-1">1</a></sup> and another<sup class="footnote-ref"><a href="#fn-long-note" id="fnref-long-note">2</a></sup> and again<sup class="footnote-ref"><a href="#fn-1" id="fnref-1-2">1</a></sup>.</p>
+<hr>
+<p>The end.</p>
+<section class="footnotes">
+<ol>
+<li id="fn-1">
+<p>First note. <a href="#fnref-1" class="footnote-backref" aria-label="Back to reference">↩</a></p>
+</li>
+<li id="fn-long-note">
+<p>Second note with <code>code</code>. <a href="#fnref-long-note" class="footnote-backref" aria-label="Back to reference">↩</a></p>
+</li>
+</ol>
+</section>

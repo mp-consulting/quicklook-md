@@ -1,265 +1,436 @@
 import Foundation
-import Markdown
+import cmark_gfm
+import cmark_gfm_extensions
 
-/// Converts a Markdown AST into an HTML fragment.
-struct HTMLRenderer: MarkupVisitor {
-    typealias Result = String
+/// Renders a cmark-gfm syntax tree to GitHub-flavored HTML in a single pass.
+struct HTMLRenderer {
+    private var out: HTMLBuffer
+    private let document: ParsedDocument
+    private let imageSource: (String) -> String
 
-    /// Maps an image source to the URL that should be emitted in `src`.
-    var imageSource: (String) -> String
+    private var slugger = Slugger()
+    private var extensionKinds: [UInt32: ExtensionKind] = [:]
 
-    private var usedSlugs: [String: Int] = [:]
-    private var inTableHead = false
-    private var columnAlignments: [Table.ColumnAlignment?] = []
-    private var tightLists: [Bool] = []
+    // Table state. Tables can't nest, so one set suffices.
+    private var tableAlignments: UnsafeMutablePointer<UInt8>?
+    private var tableColumns = 0
+    private var cellIndex = 0
+    private var inHeaderRow = false
+    private var tableBodyOpen = false
 
-    init(imageSource: @escaping (String) -> String) {
+    // Footnote state.
+    private var footnotesOpen = false
+    private var footnoteReferenceCounts: [String: Int] = [:]
+    private var footnoteIDs: [Node: String] = [:]
+
+    /// A loose task item whose checkbox goes inside its first paragraph.
+    private var pendingCheckbox: Node?
+    private var backReferenceWritten = false
+
+    private enum ExtensionKind {
+        case table, tableRow, tableCell, strikethrough, other
+    }
+
+    /// Renders `document` and appends the HTML to `buffer`.
+    static func render(_ document: ParsedDocument, into buffer: inout HTMLBuffer, imageSource: @escaping (String) -> String) {
+        var renderer = HTMLRenderer(out: buffer, document: document, imageSource: imageSource)
+        buffer = HTMLBuffer() // Hand over storage so appends don't copy.
+        renderer.renderTree()
+        buffer = renderer.out
+    }
+
+    private init(out: HTMLBuffer, document: ParsedDocument, imageSource: @escaping (String) -> String) {
+        self.out = out
+        self.document = document
         self.imageSource = imageSource
     }
 
-    mutating func defaultVisit(_ markup: Markup) -> String {
-        visitChildren(markup)
-    }
+    private mutating func renderTree() {
+        let iterator = cmark_iter_new(document.root)
+        defer { cmark_iter_free(iterator) }
 
-    private mutating func visitChildren(_ markup: Markup) -> String {
-        var out = ""
-        for child in markup.children {
-            out += visit(child)
+        while true {
+            let event = cmark_iter_next(iterator)
+            if event == CMARK_EVENT_DONE { break }
+            guard let node = cmark_iter_get_node(iterator) else { continue }
+            let entering = event == CMARK_EVENT_ENTER
+
+            switch cmark_node_get_type(node) {
+            case CMARK_NODE_DOCUMENT:
+                if !entering, footnotesOpen { out.append("</ol>\n</section>\n") }
+            case CMARK_NODE_PARAGRAPH:
+                paragraph(node, entering: entering)
+            case CMARK_NODE_TEXT:
+                out.appendEscaped(cmark_node_get_literal(node))
+            case CMARK_NODE_SOFTBREAK:
+                out.append("\n")
+            case CMARK_NODE_LINEBREAK:
+                out.append("<br>\n")
+            case CMARK_NODE_CODE:
+                out.append("<code>")
+                out.appendEscaped(cmark_node_get_literal(node))
+                out.append("</code>")
+            case CMARK_NODE_EMPH:
+                out.append(entering ? "<em>" : "</em>")
+            case CMARK_NODE_STRONG:
+                out.append(entering ? "<strong>" : "</strong>")
+            case CMARK_NODE_LINK:
+                link(node, entering: entering)
+            case CMARK_NODE_IMAGE:
+                image(node)
+                // The alt text has been written; skip the image's children.
+                cmark_iter_reset(iterator, node, CMARK_EVENT_EXIT)
+            case CMARK_NODE_HTML_BLOCK, CMARK_NODE_HTML_INLINE:
+                rawHTML(cmark_node_get_literal(node))
+            case CMARK_NODE_HEADING:
+                heading(node, entering: entering)
+            case CMARK_NODE_BLOCK_QUOTE:
+                blockQuote(node, entering: entering)
+            case CMARK_NODE_LIST:
+                list(node, entering: entering)
+            case CMARK_NODE_ITEM:
+                item(node, entering: entering)
+            case CMARK_NODE_CODE_BLOCK:
+                codeBlock(node)
+            case CMARK_NODE_THEMATIC_BREAK:
+                out.append("<hr>\n")
+            case CMARK_NODE_FOOTNOTE_REFERENCE:
+                // Not a leaf for cmark's iterator, so it's visited on exit too.
+                if entering { footnoteReference(node) }
+            case CMARK_NODE_FOOTNOTE_DEFINITION:
+                footnoteDefinition(node, entering: entering)
+            default:
+                extensionNode(node, entering: entering)
+            }
         }
-        return out
     }
 
     // MARK: Blocks
 
-    mutating func visitDocument(_ document: Document) -> String {
-        visitChildren(document)
-    }
-
-    mutating func visitHeading(_ heading: Heading) -> String {
-        let id = uniqueSlug(for: heading.plainText)
-        let level = heading.level
-        return "<h\(level) id=\"\(id.htmlEscaped)\"><a class=\"anchor\" href=\"#\(id.htmlEscaped)\"></a>\(visitChildren(heading))</h\(level)>\n"
-    }
-
-    mutating func visitParagraph(_ paragraph: Paragraph) -> String {
-        // Inside tight list items, paragraphs render without <p> like GitHub does.
-        if paragraph.parent is ListItem, tightLists.last == true {
-            return visitChildren(paragraph)
-        }
-        return "<p>\(visitChildren(paragraph))</p>\n"
-    }
-
-    mutating func visitBlockQuote(_ blockQuote: BlockQuote) -> String {
-        if let alert = Alert(blockQuote) {
-            var body = ""
-            for (index, child) in blockQuote.children.enumerated() {
-                if index == 0, let paragraph = child as? Paragraph {
-                    // Drop the "[!NOTE]" marker and the line break that follows it.
-                    let rest = Array(paragraph.children.dropFirst(paragraph.childCount > 1 && paragraph.child(at: 1) is SoftBreak ? 2 : 1))
-                    let inner = rest.map { visit($0) }.joined()
-                    if !inner.isEmpty { body += "<p>\(inner)</p>\n" }
-                } else {
-                    body += visit(child)
-                }
+    private mutating func paragraph(_ node: Node, entering: Bool) {
+        let parent = cmark_node_parent(node)
+        // Paragraphs in tight list items render bare, as on GitHub.
+        let tight = parent.map { cmark_node_get_type($0) == CMARK_NODE_ITEM && Self.isInTightList($0) } ?? false
+        if entering {
+            if !tight { out.append("<p>") }
+            if let item = pendingCheckbox, item == parent {
+                appendCheckbox(for: item)
+                pendingCheckbox = nil
             }
-            return "<div class=\"alert alert-\(alert.rawValue)\"><p class=\"alert-title\">\(alert.title)</p>\n\(body)</div>\n"
+            return
         }
-        return "<blockquote>\n\(visitChildren(blockQuote))</blockquote>\n"
-    }
-
-    mutating func visitCodeBlock(_ codeBlock: CodeBlock) -> String {
-        let code = codeBlock.code.htmlEscaped
-        if let language = codeBlock.language?.split(separator: " ").first, !language.isEmpty {
-            let lang = String(language).htmlEscaped
-            return "<pre data-lang=\"\(lang)\"><code class=\"language-\(lang)\">\(code)</code></pre>\n"
+        if let parent, cmark_node_get_type(parent) == CMARK_NODE_FOOTNOTE_DEFINITION, cmark_node_next(node) == nil {
+            footnoteBackReference(parent)
         }
-        return "<pre><code>\(code)</code></pre>\n"
+        if !tight { out.append("</p>\n") }
     }
 
-    mutating func visitHTMLBlock(_ html: HTMLBlock) -> String {
-        rewritingImageSources(in: html.rawHTML, using: imageSource)
-    }
-
-    mutating func visitThematicBreak(_ thematicBreak: ThematicBreak) -> String {
-        "<hr>\n"
-    }
-
-    mutating func visitOrderedList(_ orderedList: OrderedList) -> String {
-        let start = orderedList.startIndex == 1 ? "" : " start=\"\(orderedList.startIndex)\""
-        return "<ol\(start)\(taskListClass(orderedList))>\n\(visitListItems(orderedList))</ol>\n"
-    }
-
-    mutating func visitUnorderedList(_ unorderedList: UnorderedList) -> String {
-        "<ul\(taskListClass(unorderedList))>\n\(visitListItems(unorderedList))</ul>\n"
-    }
-
-    mutating func visitListItem(_ listItem: ListItem) -> String {
-        guard let checkbox = listItem.checkbox else {
-            return "<li>\(visitChildren(listItem))</li>\n"
+    private mutating func heading(_ node: Node, entering: Bool) {
+        let level = Int(cmark_node_get_heading_level(node))
+        guard entering else {
+            out.append("</h")
+            out.append(level)
+            out.append(">\n")
+            return
         }
-        let checked = checkbox == .checked ? " checked" : ""
-        return "<li class=\"task-list-item\"><input type=\"checkbox\" disabled\(checked)> \(visitChildren(listItem))</li>\n"
+        let id = slugger.uniqueSlug(for: Self.plainText(of: node)).htmlEscaped
+        out.append("<h")
+        out.append(level)
+        out.append(" id=\"")
+        out.append(id)
+        out.append("\"><a class=\"anchor\" href=\"#")
+        out.append(id)
+        out.append("\"></a>")
     }
 
-    mutating func visitTable(_ table: Table) -> String {
-        columnAlignments = table.columnAlignments
-        var out = "<table>\n"
-        inTableHead = true
-        out += "<thead>\n<tr>\n\(visitChildren(table.head))</tr>\n</thead>\n"
-        inTableHead = false
-        if !table.body.isEmpty {
-            out += "<tbody>\n\(visit(table.body))</tbody>\n"
-        }
-        return out + "</table>\n"
-    }
-
-    mutating func visitTableRow(_ tableRow: Table.Row) -> String {
-        "<tr>\n\(visitChildren(tableRow))</tr>\n"
-    }
-
-    mutating func visitTableCell(_ tableCell: Table.Cell) -> String {
-        guard tableCell.colspan > 0, tableCell.rowspan > 0 else { return "" }
-        let index = tableCell.indexInParent
-        let tag = inTableHead ? "th" : "td"
-        var attributes = ""
-        if index < columnAlignments.count, let alignment = columnAlignments[index] {
-            let value: String
-            switch alignment {
-            case .left: value = "left"
-            case .center: value = "center"
-            case .right: value = "right"
+    private mutating func blockQuote(_ node: Node, entering: Bool) {
+        if let alert = document.alerts[node] {
+            if entering {
+                out.append("<div class=\"alert alert-")
+                out.append(alert.rawValue)
+                out.append("\"><p class=\"alert-title\">")
+                out.append(alert.title)
+                out.append("</p>\n")
+            } else {
+                out.append("</div>\n")
             }
-            attributes += " align=\"\(value)\""
+        } else {
+            out.append(entering ? "<blockquote>\n" : "</blockquote>\n")
         }
-        if tableCell.colspan > 1 { attributes += " colspan=\"\(tableCell.colspan)\"" }
-        if tableCell.rowspan > 1 { attributes += " rowspan=\"\(tableCell.rowspan)\"" }
-        return "<\(tag)\(attributes)>\(visitChildren(tableCell))</\(tag)>\n"
+    }
+
+    private mutating func list(_ node: Node, entering: Bool) {
+        let ordered = cmark_node_get_list_type(node) == CMARK_ORDERED_LIST
+        guard entering else {
+            out.append(ordered ? "</ol>\n" : "</ul>\n")
+            return
+        }
+        if let parent = cmark_node_parent(node), cmark_node_get_type(parent) == CMARK_NODE_ITEM, cmark_node_previous(node) != nil,
+           Self.isInTightList(parent) {
+            out.append("\n")
+        }
+        out.append(ordered ? "<ol" : "<ul")
+        let start = Int(cmark_node_get_list_start(node))
+        if ordered, start != 1 {
+            out.append(" start=\"")
+            out.append(start)
+            out.append("\"")
+        }
+        if Self.containsTaskItem(node) {
+            out.append(" class=\"contains-task-list\"")
+        }
+        out.append(">\n")
+    }
+
+    private mutating func item(_ node: Node, entering: Bool) {
+        guard entering else {
+            out.append("</li>\n")
+            return
+        }
+        guard Self.isTaskItem(node) else {
+            out.append("<li>")
+            return
+        }
+        out.append("<li class=\"task-list-item\">")
+        // GitHub puts the checkbox inside the first paragraph of a loose item.
+        if let first = cmark_node_first_child(node), cmark_node_get_type(first) == CMARK_NODE_PARAGRAPH, !Self.isInTightList(node) {
+            pendingCheckbox = node
+        } else {
+            appendCheckbox(for: node)
+        }
+    }
+
+    private mutating func appendCheckbox(for item: Node) {
+        out.append(cmark_gfm_extensions_get_tasklist_item_checked(item)
+            ? "<input type=\"checkbox\" disabled checked> "
+            : "<input type=\"checkbox\" disabled> ")
+    }
+
+    private mutating func codeBlock(_ node: Node) {
+        let language = Self.language(fromInfo: cmark_node_get_fence_info(node))
+        if let language {
+            out.append("<pre data-lang=\"")
+            out.appendEscaped(language)
+            out.append("\"><code class=\"language-")
+            out.appendEscaped(language)
+            out.append("\">")
+        } else {
+            out.append("<pre><code>")
+        }
+        out.appendEscaped(cmark_node_get_literal(node))
+        out.append("</code></pre>\n")
+    }
+
+    private mutating func rawHTML(_ literal: UnsafePointer<CChar>?) {
+        guard let literal else { return }
+        let html = UnsafeRawBufferPointer(start: literal, count: strlen(literal))
+        appendRewritingImageSources(html, to: &out, using: imageSource)
     }
 
     // MARK: Inlines
 
-    mutating func visitText(_ text: Text) -> String {
-        text.string.htmlEscaped
+    private mutating func link(_ node: Node, entering: Bool) {
+        guard entering else {
+            out.append("</a>")
+            return
+        }
+        out.append("<a href=\"")
+        out.appendEscaped(cmark_node_get_url(node))
+        out.append("\"")
+        appendTitle(of: node)
+        out.append(">")
     }
 
-    mutating func visitEmphasis(_ emphasis: Emphasis) -> String {
-        "<em>\(visitChildren(emphasis))</em>"
+    private mutating func image(_ node: Node) {
+        let url = cmark_node_get_url(node).map { String(cString: $0) } ?? ""
+        out.append("<img src=\"")
+        out.appendEscaped(imageSource(url))
+        out.append("\" alt=\"")
+        out.appendEscaped(Self.plainText(of: node))
+        out.append("\"")
+        appendTitle(of: node)
+        out.append(">")
     }
 
-    mutating func visitStrong(_ strong: Strong) -> String {
-        "<strong>\(visitChildren(strong))</strong>"
+    private mutating func appendTitle(of node: Node) {
+        guard let title = cmark_node_get_title(node), title.pointee != 0 else { return }
+        out.append(" title=\"")
+        out.appendEscaped(title)
+        out.append("\"")
     }
 
-    mutating func visitStrikethrough(_ strikethrough: Strikethrough) -> String {
-        "<del>\(visitChildren(strikethrough))</del>"
+    // MARK: Footnotes
+
+    private mutating func footnoteReference(_ node: Node) {
+        guard let definition = cmark_node_parent_footnote_def(node) else { return }
+        let id = footnoteID(definition)
+        let count = footnoteReferenceCounts[id, default: 0] + 1
+        footnoteReferenceCounts[id] = count
+        out.append("<sup class=\"footnote-ref\"><a href=\"#fn-")
+        out.append(id)
+        out.append("\" id=\"fnref-")
+        out.append(id)
+        if count > 1 {
+            out.append("-")
+            out.append(count)
+        }
+        out.append("\">")
+        out.appendEscaped(cmark_node_get_literal(node))
+        out.append("</a></sup>")
     }
 
-    mutating func visitInlineCode(_ inlineCode: InlineCode) -> String {
-        "<code>\(inlineCode.code.htmlEscaped)</code>"
+    private mutating func footnoteDefinition(_ node: Node, entering: Bool) {
+        if entering {
+            if !footnotesOpen {
+                out.append("<section class=\"footnotes\">\n<ol>\n")
+                footnotesOpen = true
+            }
+            backReferenceWritten = false
+            out.append("<li id=\"fn-")
+            out.append(footnoteID(node))
+            out.append("\">\n")
+        } else {
+            if !backReferenceWritten { footnoteBackReference(node) }
+            out.append("</li>\n")
+        }
     }
 
-    mutating func visitInlineHTML(_ inlineHTML: InlineHTML) -> String {
-        rewritingImageSources(in: inlineHTML.rawHTML, using: imageSource)
+    private mutating func footnoteBackReference(_ definition: Node) {
+        out.append(" <a href=\"#fnref-")
+        out.append(footnoteID(definition))
+        out.append("\" class=\"footnote-backref\" aria-label=\"Back to reference\">↩</a>")
+        backReferenceWritten = true
     }
 
-    mutating func visitLineBreak(_ lineBreak: LineBreak) -> String {
-        "<br>\n"
+    // MARK: Extensions
+
+    private mutating func extensionNode(_ node: Node, entering: Bool) {
+        switch extensionKind(of: node) {
+        case .table:
+            if entering {
+                tableAlignments = cmark_gfm_extensions_get_table_alignments(node)
+                tableColumns = Int(cmark_gfm_extensions_get_table_columns(node))
+                tableBodyOpen = false
+                out.append("<table>\n")
+            } else {
+                if tableBodyOpen { out.append("</tbody>\n") }
+                out.append("</table>\n")
+            }
+        case .tableRow where cmark_gfm_extensions_get_table_row_is_header(node) != 0:
+            inHeaderRow = entering
+            cellIndex = 0
+            out.append(entering ? "<thead>\n<tr>\n" : "</tr>\n</thead>\n")
+        case .tableRow:
+            if entering {
+                if !tableBodyOpen {
+                    out.append("<tbody>\n")
+                    tableBodyOpen = true
+                }
+                cellIndex = 0
+                out.append("<tr>\n")
+            } else {
+                out.append("</tr>\n")
+            }
+        case .tableCell:
+            tableCell(entering: entering)
+        case .strikethrough:
+            out.append(entering ? "<del>" : "</del>")
+        case .other:
+            break
+        }
     }
 
-    mutating func visitSoftBreak(_ softBreak: SoftBreak) -> String {
-        "\n"
+    private mutating func tableCell(entering: Bool) {
+        guard entering else {
+            out.append(inHeaderRow ? "</th>\n" : "</td>\n")
+            cellIndex += 1
+            return
+        }
+        out.append(inHeaderRow ? "<th" : "<td")
+        if let tableAlignments, cellIndex < tableColumns {
+            switch tableAlignments[cellIndex] {
+            case UInt8(ascii: "l"): out.append(" align=\"left\"")
+            case UInt8(ascii: "c"): out.append(" align=\"center\"")
+            case UInt8(ascii: "r"): out.append(" align=\"right\"")
+            default: break
+            }
+        }
+        out.append(">")
     }
 
-    mutating func visitLink(_ link: Link) -> String {
-        let href = (link.destination ?? "").htmlEscaped
-        let title = link.title.map { " title=\"\($0.htmlEscaped)\"" } ?? ""
-        return "<a href=\"\(href)\"\(title)>\(visitChildren(link))</a>"
-    }
-
-    mutating func visitImage(_ image: Image) -> String {
-        let src = imageSource(image.source ?? "").htmlEscaped
-        let alt = image.plainText.htmlEscaped
-        let title = image.title.map { " title=\"\($0.htmlEscaped)\"" } ?? ""
-        return "<img src=\"\(src)\" alt=\"\(alt)\"\(title)>"
-    }
-
-    mutating func visitSymbolLink(_ symbolLink: SymbolLink) -> String {
-        "<code>\((symbolLink.destination ?? "").htmlEscaped)</code>"
+    /// Extension node types are assigned at runtime, so they're identified by name once per type and cached.
+    /// Header and body rows share a type; `tableRow` covers both.
+    private mutating func extensionKind(of node: Node) -> ExtensionKind {
+        let type = cmark_node_get_type(node).rawValue
+        if let kind = extensionKinds[type] { return kind }
+        let kind: ExtensionKind
+        switch String(cString: cmark_node_get_type_string(node)) {
+        case "table": kind = .table
+        case "table_header", "table_row": kind = .tableRow
+        case "table_cell": kind = .tableCell
+        case "strikethrough": kind = .strikethrough
+        default: kind = .other
+        }
+        extensionKinds[type] = kind
+        return kind
     }
 
     // MARK: Helpers
 
-    private mutating func visitListItems(_ list: Markup) -> String {
-        tightLists.append(isTight(list))
-        defer { tightLists.removeLast() }
-        return visitChildren(list)
-    }
-
-    /// A list is loose if any of its items, or any blocks within an item, are separated by a blank line.
-    private func isTight(_ list: Markup) -> Bool {
-        let items = Array(list.children)
-        for (index, item) in items.enumerated() {
-            let blocks = Array(item.children)
-            for (a, b) in zip(blocks, blocks.dropFirst()) where isSeparatedByBlankLine(a, b) {
-                return false
-            }
-            if index + 1 < items.count, let last = blocks.last, isSeparatedByBlankLine(last, items[index + 1]) {
-                return false
-            }
-        }
-        return true
-    }
-
-    private func isSeparatedByBlankLine(_ a: Markup, _ b: Markup) -> Bool {
-        guard let end = a.range?.upperBound.line, let start = b.range?.lowerBound.line else { return false }
-        return start - end > 1
-    }
-
-    private func taskListClass(_ list: Markup) -> String {
-        list.children.contains { ($0 as? ListItem)?.checkbox != nil } ? " class=\"contains-task-list\"" : ""
-    }
-
-    private mutating func uniqueSlug(for text: String) -> String {
-        let base = text.lowercased()
-            .unicodeScalars
-            .filter { CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "-" || $0 == "_" }
-            .map { $0 == " " ? "-" : String($0) }
-            .joined()
-        let count = usedSlugs[base, default: 0]
-        usedSlugs[base] = count + 1
-        return count == 0 ? base : "\(base)-\(count)"
-    }
-}
-
-/// GitHub-style alerts: `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`.
-enum Alert: String, CaseIterable {
-    case note, tip, important, warning, caution
-
-    var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
-
-    init?(_ blockQuote: BlockQuote) {
-        guard let paragraph = blockQuote.child(at: 0) as? Paragraph,
-              let text = paragraph.child(at: 0) as? Text else { return nil }
-        let marker = text.string.trimmingCharacters(in: .whitespaces).lowercased()
-        guard marker.hasPrefix("[!"), marker.hasSuffix("]"),
-              let alert = Alert(rawValue: String(marker.dropFirst(2).dropLast())) else { return nil }
-        self = alert
-    }
-}
-
-extension StringProtocol {
-    var htmlEscaped: String {
-        var out = ""
-        out.reserveCapacity(count)
-        for character in self {
-            switch character {
-            case "&": out += "&amp;"
-            case "<": out += "&lt;"
-            case ">": out += "&gt;"
-            case "\"": out += "&quot;"
-            default: out.append(character)
+    /// The text content of a node's descendants, as used for heading IDs and image alt text.
+    static func plainText(of node: Node) -> String {
+        var text = HTMLBuffer()
+        let iterator = cmark_iter_new(node)
+        defer { cmark_iter_free(iterator) }
+        while true {
+            let event = cmark_iter_next(iterator)
+            if event == CMARK_EVENT_DONE { break }
+            guard event == CMARK_EVENT_ENTER, let child = cmark_iter_get_node(iterator) else { continue }
+            switch cmark_node_get_type(child) {
+            case CMARK_NODE_TEXT, CMARK_NODE_CODE:
+                text.appendRaw(cmark_node_get_literal(child))
+            case CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK:
+                text.append(" ")
+            default:
+                break
             }
         }
-        return out
+        return text.string
+    }
+
+    private static func isInTightList(_ item: Node) -> Bool {
+        cmark_node_parent(item).map { cmark_node_get_list_tight($0) != 0 } ?? false
+    }
+
+    private static func isTaskItem(_ node: Node) -> Bool {
+        strcmp(cmark_node_get_type_string(node), "tasklist") == 0
+    }
+
+    private static func containsTaskItem(_ list: Node) -> Bool {
+        var child = cmark_node_first_child(list)
+        while let item = child {
+            if isTaskItem(item) { return true }
+            child = cmark_node_next(item)
+        }
+        return false
+    }
+
+    /// The first word of a fenced code block's info string, e.g. `swift` in "```swift title=x".
+    static func language(fromInfo info: UnsafePointer<CChar>?) -> String? {
+        guard let info else { return nil }
+        let word = String(cString: info).split(whereSeparator: \.isWhitespace).first
+        return word.map(String.init)
+    }
+
+    /// Footnote labels are free text; keep IDs to characters that are safe in both `id` and `href`.
+    private mutating func footnoteID(_ definition: Node) -> String {
+        if let id = footnoteIDs[definition] { return id }
+        let label = cmark_node_get_literal(definition).map { String(cString: $0) } ?? ""
+        var id = String.UnicodeScalarView()
+        for scalar in label.unicodeScalars {
+            id.append(Slugger.isWordCharacter(scalar) || scalar == "-" || scalar == "_" ? scalar : "-")
+        }
+        footnoteIDs[definition] = String(id)
+        return String(id)
     }
 }

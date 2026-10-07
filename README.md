@@ -4,8 +4,9 @@ A macOS Quick Look extension that renders Markdown files (`.md`, `.markdown`) as
 
 ## Features
 
-- CommonMark + GitHub Flavored Markdown (tables with alignment, task lists, strikethrough, autolinks) via [swift-markdown](https://github.com/swiftlang/swift-markdown)
+- CommonMark + GitHub Flavored Markdown (tables with alignment, task lists, strikethrough, autolinks, footnotes) via [cmark-gfm](https://github.com/swiftlang/swift-cmark), GitHub's own parser
 - GitHub alerts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`)
+- Fast: a typical README renders in about 2 ms, a 1.5 MB document in about 130 ms
 - YAML/TOML front matter shown as a block instead of garbled text
 - Local images (relative, absolute, `~/`, and raw HTML `<img>`) embedded in the preview
 - Raw HTML passthrough, light and dark mode
@@ -36,7 +37,8 @@ Requires Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew inst
 
 ```sh
 make install     # build Release, copy to /Applications, register the extension, reset Quick Look
-make test        # run the renderer unit tests
+make test        # run the renderer test suite
+make bench       # benchmark rendering (release build)
 make uninstall
 make release VERSION=1.0.0   # build, sign and package into dist/ (ad-hoc signed unless SIGN_IDENTITY is set)
 ```
@@ -49,9 +51,19 @@ If previews still show plain text, open the app and click **Open Extension Setti
 |------|------|
 | `PreviewExtension/` | Data-based Quick Look preview extension (`QLPreviewProvider`) |
 | `App/` | Host app: shows a sample rendering and a shortcut to extension settings |
-| `Packages/MarkdownRendering/` | Markdown → HTML renderer and stylesheet, with tests |
+| `Packages/MarkdownRendering/` | Markdown → HTML renderer, stylesheet and local image loading, with tests and a benchmark |
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj`, Info.plists or entitlements |
 | `scripts/build-release.sh` | Release build: signing, notarization, `.zip`/`.dmg` packaging and checksums |
+
+## Tests
+
+The renderer's tests live in `Packages/MarkdownRendering/Tests` and use Swift Testing. `SnapshotTests` renders every `Fixtures/*.md` file and compares the result with the `.html` file next to it. After an intended rendering change, rerun with `RECORD_SNAPSHOTS=1` and review the diff of the `.html` files before committing.
+
+```sh
+cd Packages/MarkdownRendering
+swift test
+RECORD_SNAPSHOTS=1 swift test --filter SnapshotTests
+```
 
 ## Releasing
 
