@@ -4,10 +4,13 @@ BUILT_APP  := $(DERIVED)/Build/Products/Release/$(APP_NAME).app
 INSTALL_TO := /Applications/$(APP_NAME).app
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
-.PHONY: project build test bench install uninstall reload release clean
+.PHONY: project icon build test bench install uninstall reload release clean
 
 project:
 	xcodegen generate
+
+icon:
+	swift scripts/make-icon.swift
 
 build: project
 	xcodebuild -project QuickLookMD.xcodeproj -scheme QuickLookMD -configuration Release \
