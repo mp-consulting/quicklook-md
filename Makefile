@@ -2,6 +2,7 @@ APP_NAME   := QuickLook MD
 DERIVED    := $(HOME)/Library/Developer/Xcode/DerivedData/QuickLookMD-cli
 BUILT_APP  := $(DERIVED)/Build/Products/Release/$(APP_NAME).app
 INSTALL_TO := /Applications/$(APP_NAME).app
+LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 .PHONY: project build test install uninstall reload release clean
 
@@ -20,6 +21,9 @@ install: build
 	ditto "$(BUILT_APP)" "$(INSTALL_TO)"
 	open -g "$(INSTALL_TO)" && sleep 1 && osascript -e 'quit app "$(APP_NAME)"' || true
 	pluginkit -a "$(INSTALL_TO)/Contents/PlugIns/QuickLookMDPreview.appex"
+	# Unregister the build copy so only the installed app shows up in Login Items & Extensions.
+	pluginkit -r "$(BUILT_APP)/Contents/PlugIns/QuickLookMDPreview.appex" 2>/dev/null || true
+	$(LSREGISTER) -u "$(BUILT_APP)"
 	$(MAKE) reload
 
 uninstall:
